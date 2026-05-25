@@ -60,25 +60,25 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                    Flutter / Dart (UI)                      │
-│  ┌─────────┐  ┌──────────────┐  ┌──────────┐  ┌─────────┐ │
-│  │ Home    │  │ Translate    │  │ Artikel  │  │Settings │ │
-│  │ Page    │  │ Page         │  │ Page     │  │ Page    │ │
-│  └─────────┘  └──────┬───────┘  └──────────┘  └─────────┘ │
+│                    Flutter / Dart (UI)                     │
+│  ┌─────────┐  ┌──────────────┐  ┌──────────┐  ┌─────────┐  │
+│  │ Home    │  │ Translate    │  │ Artikel  │  │Settings │  │
+│  │ Page    │  │ Page         │  │ Page     │  │ Page    │  │
+│  └─────────┘  └──────┬───────┘  └──────────┘  └─────────┘  │
 │                      │ MethodChannel                       │
 ├──────────────────────┼─────────────────────────────────────┤
-│              Android PlatformView (Kotlin)                  │
+│              Android PlatformView (Kotlin)                 │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │  CameraX (PreviewView)  ◄──►  MediaPipe Landmarker   │  │
 │  │                              (Pose + Hand)           │  │
-│  │                                       │               │  │
-│  │  ┌────────────────────────────────────┘               │  │
+│  │                                       │              │  │
+│  │  ┌────────────────────────────────────┘              │  │
 │  │  │  assembleFrame() → 51 landmarks × 3 = 153-dim     │  │
-│  │  │                                                    │  │
+│  │  │                                                   │  │
 │  │  │  Circular Buffer (125 frames) ──► TFLite Interp.  │  │
 │  │  │                        Softmax + Temporal Smooth. │  │
-│  │  │                        ──► MethodChannel callback  │  │
-│  │  └────────────────────────────────────────────────────┘  │
+│  │  │                        ──► MethodChannel callback │  │
+│  │  └───────────────────────────────────────────────────┘  │
 │  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────┘
 ```
