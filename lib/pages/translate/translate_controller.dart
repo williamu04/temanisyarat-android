@@ -85,7 +85,6 @@ class TranslateController extends ChangeNotifier {
     writeOffset = newWriteOffset;
     totalFrames = newTotalFrames;
     if (modelLoadedArg != null) modelLoaded = modelLoadedArg;
-    notifyListeners();
 
     if (prediction != null && prediction != currentPrediction) {
       currentPrediction = prediction;

@@ -292,10 +292,7 @@ class HandLandmarkerView(
         val (frame, nanCount) = assembleFrame(pose, leftHand, rightHand)
 
         if (nanCount > FRAME_DIM / 2) {
-            val args = hashMapOf<String, Any?>()
-            args["prediction"] = null
-            args["hasLandmarks"] = false
-            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
+            mainHandler.post { sendState(false, hasLandmarks = false) }
             return
         }
 
@@ -309,24 +306,14 @@ class HandLandmarkerView(
 
         if (canInfer) {
             inferenceTick++
-            if (inferenceTick % INFERENCE_INTERVAL == 0) {
+            val shouldInfer = inferenceTick % INFERENCE_INTERVAL == 0
+            if (shouldInfer) {
                 inferenceExecutor.execute { runInference() }
+            } else {
+                mainHandler.post { sendState(true) }
             }
-            val args = hashMapOf<String, Any?>()
-            args["prediction"] = previousPrediction
-            args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
-            args["bufferReady"] = true
-            args["writeOffset"] = frameCount % MAX_FRAMES
-            args["totalFrames"] = frameCount
-            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
         } else {
-            val args = hashMapOf<String, Any?>()
-            args["prediction"] = null
-            args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
-            args["bufferReady"] = false
-            args["writeOffset"] = frameCount % MAX_FRAMES
-            args["totalFrames"] = frameCount
-            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
+            mainHandler.post { sendState(false) }
         }
     }
 
@@ -374,13 +361,19 @@ class HandLandmarkerView(
             null
         }
 
+        mainHandler.post { sendState(true, prediction) }
+    }
+
+    private fun sendState(isReady: Boolean, prediction: String? = null, hasLandmarks: Boolean = true) {
+        val pred = if (hasLandmarks) (prediction ?: previousPrediction) else null
         val args = hashMapOf<String, Any?>()
-        args["prediction"] = prediction
-        args["bufferCount"] = currentCount.coerceAtMost(MAX_FRAMES)
-        args["bufferReady"] = true
-        args["writeOffset"] = currentCount % MAX_FRAMES
-        args["totalFrames"] = currentCount
-        mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
+        args["prediction"] = pred
+        args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
+        args["bufferReady"] = isReady
+        args["writeOffset"] = frameCount % MAX_FRAMES
+        args["totalFrames"] = frameCount
+        args["hasLandmarks"] = hasLandmarks
+        methodChannel.invokeMethod("onLandmarks", args)
     }
 
     private fun assembleFrame(
@@ -469,10 +462,10 @@ class HandLandmarkerView(
     override fun getView(): View = rootView
 
     override fun dispose() {
-        cameraProvider?.unbindAll()
-        handLandmarkerHelper?.clear()
         backgroundExecutor.shutdown()
         inferenceExecutor.shutdown()
+        cameraProvider?.unbindAll()
+        handLandmarkerHelper?.clear()
         interpreter?.close()
         methodChannel.setMethodCallHandler(null)
     }

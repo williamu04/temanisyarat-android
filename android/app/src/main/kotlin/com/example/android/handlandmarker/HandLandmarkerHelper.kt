@@ -36,6 +36,8 @@ class HandLandmarkerHelper(
     @Volatile
     private var isShutdown = false
 
+    private val landmarkerLock = Any()
+
     private val runningMode = RunningMode.LIVE_STREAM
 
     private class PendingFrame(
@@ -47,6 +49,10 @@ class HandLandmarkerHelper(
 
     private val pendingFrames = ConcurrentHashMap<Long, PendingFrame>()
 
+    private var srcBitmap: Bitmap? = null
+    private var dstBitmap: Bitmap? = null
+    private var dstCanvas: Canvas? = null
+
     init {
         setupHandLandmarker()
         setupPoseLandmarker()
@@ -57,12 +63,14 @@ class HandLandmarkerHelper(
     }
 
     fun clear() {
-        shutdown()
-        pendingFrames.clear()
-        handLandmarker?.close()
-        handLandmarker = null
-        poseLandmarker?.close()
-        poseLandmarker = null
+        synchronized(landmarkerLock) {
+            isShutdown = true
+            pendingFrames.clear()
+            handLandmarker?.close()
+            handLandmarker = null
+            poseLandmarker?.close()
+            poseLandmarker = null
+        }
     }
 
     fun isClosed(): Boolean = handLandmarker == null && poseLandmarker == null
@@ -134,40 +142,65 @@ class HandLandmarkerHelper(
     }
 
     fun detectLiveStream(imageProxy: ImageProxy, isFrontCamera: Boolean) {
-        if (isShutdown) {
-            imageProxy.close()
-            return
-        }
+        val frameTime: Long
+        val mpImage: MPImage
 
-        val frameTime = SystemClock.uptimeMillis()
-
-        val bitmapBuffer = createBitmap(imageProxy.width, imageProxy.height)
-        imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
-        imageProxy.close()
-
-        val matrix = Matrix().apply {
-            postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
-            if (isFrontCamera) {
-                postScale(-1f, 1f, imageProxy.width.toFloat() / 2f, imageProxy.height.toFloat() / 2f)
+        synchronized(landmarkerLock) {
+            if (isShutdown || handLandmarker == null || poseLandmarker == null) {
+                imageProxy.close()
+                return
             }
+
+            frameTime = SystemClock.uptimeMillis()
+
+            val rotation = imageProxy.imageInfo.rotationDegrees
+            val width = imageProxy.width
+            val height = imageProxy.height
+
+            val buffer = imageProxy.planes[0].buffer
+            if (srcBitmap == null || srcBitmap!!.width != width || srcBitmap!!.height != height) {
+                srcBitmap = createBitmap(width, height)
+            }
+            srcBitmap!!.copyPixelsFromBuffer(buffer)
+            imageProxy.close()
+
+            val rotatedW: Int
+            val rotatedH: Int
+            if (rotation == 90 || rotation == 270) {
+                rotatedW = height
+                rotatedH = width
+            } else {
+                rotatedW = width
+                rotatedH = height
+            }
+
+            if (dstBitmap == null || dstBitmap!!.width != rotatedW || dstBitmap!!.height != rotatedH) {
+                dstBitmap = createBitmap(rotatedW, rotatedH)
+                dstCanvas = Canvas(dstBitmap!!)
+            }
+
+            val matrix = Matrix().apply {
+                postRotate(rotation.toFloat())
+                if (isFrontCamera) {
+                    postScale(-1f, 1f, width.toFloat() / 2f, height.toFloat() / 2f)
+                }
+            }
+            dstCanvas!!.drawBitmap(srcBitmap!!, matrix, null)
+
+            mpImage = BitmapImageBuilder(dstBitmap!!).build()
+
+            if (pendingFrames.size > MAX_PENDING_FRAMES) {
+                val oldest = pendingFrames.keys.minOrNull()
+                if (oldest != null) pendingFrames.remove(oldest)
+            }
+            pendingFrames[frameTime] = PendingFrame(
+                imageHeight = rotatedH,
+                imageWidth = rotatedW
+            )
+
+            handLandmarker?.detectAsync(mpImage, frameTime)
+            poseLandmarker?.detectAsync(mpImage, frameTime)
         }
-        val rotatedBitmap = Bitmap.createBitmap(
-            bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height, matrix, true
-        )
-
-        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
-
-        if (pendingFrames.size > MAX_PENDING_FRAMES) {
-            val oldest = pendingFrames.keys.minOrNull()
-            if (oldest != null) pendingFrames.remove(oldest)
-        }
-        pendingFrames[frameTime] = PendingFrame(
-            imageHeight = rotatedBitmap.height,
-            imageWidth = rotatedBitmap.width
-        )
-
-        handLandmarker?.detectAsync(mpImage, frameTime)
-        poseLandmarker?.detectAsync(mpImage, frameTime)
     }
 
     private fun returnHandLivestreamResult(result: HandLandmarkerResult, input: MPImage) {
