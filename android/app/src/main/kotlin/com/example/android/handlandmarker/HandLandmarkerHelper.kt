@@ -2,6 +2,7 @@ package com.example.android.handlandmarker
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Matrix
 import android.os.SystemClock
 import android.util.Log
