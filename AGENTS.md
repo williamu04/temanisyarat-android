@@ -4,8 +4,8 @@
 
 - **What**: Flutter app for real-time Indonesian Sign Language (BISINDO) translation using MediaPipe hand/pose landmarks + custom TFLite classification model.
 - **Structure**: Monolithic Flutter project (no feature modules). All Dart source in `lib/`. Android native layer in `android/`. TFLite inference and landmark processing run on the Android (Kotlin) side, not Dart.
-- **State**: No state management library — uses `StatefulWidget.setState()` everywhere.
-- **DI**: None — dependencies created inline (manual `new`).
+- **State**: `StatefulWidget.setState()` on main pages; `TranslateController` (extends `ChangeNotifier`) + `addListener` for translate screen.
+- **DI**: None — dependencies created inline.
 - **Networking**: None — fully offline, on-device inference.
 - **Persistence**: Simple file I/O (`history.txt` via `path_provider`).
 
@@ -29,20 +29,27 @@ lib/
                                       #   PlaceholderPage, ArtikelPage, DetailArtikel,
                                       #   SettingsPage (545 lines)
   pages/
-    translate_page.dart               # Camera + sign translation screen (404 lines)
+    translate/
+      translate_page.dart             # Camera + sign translation UI (354 lines)
+      translate_controller.dart       # MethodChannel bridge + prediction state +
+                                      #   buffer state + history persistence (129 lines)
+      widgets/
+        scanning_dots.dart            # Animated scanning indicator (55 lines)
+  services/
+    history_service.dart              # Read/write history.txt via path_provider (27 lines)
 
 android/app/src/main/kotlin/com/example/android/
-  MainActivity.kt                      # FlutterActivity
+  MainActivity.kt                     # FlutterActivity
   handlandmarker/
-    HandLandmarkerPlugin.kt            # Flutter plugin registration (PlatformViewFactory)
-    HandLandmarkerView.kt              # PlatformView: CameraX + overlay + TFLite inference
+    HandLandmarkerPlugin.kt           # Flutter plugin registration (PlatformViewFactory)
+    HandLandmarkerView.kt             # PlatformView: CameraX + overlay + TFLite inference
                                       #   + landmark assembly + circular buffer + prediction
-                                      #   processing + temporal smoothing (ALL in one file, 455 lines)
-    HandLandmarkerHelper.kt            # MediaPipe Hand/Pose Landmarker wrapper
-    HandLandmarkerOverlay.kt           # Canvas skeleton overlay
+                                      #   processing + temporal smoothing (ALL in one file)
+    HandLandmarkerHelper.kt           # MediaPipe Hand/Pose Landmarker wrapper
+    HandLandmarkerOverlay.kt          # Canvas skeleton overlay
 
 android/app/src/main/kotlin/com/example/temanisyarat/
-  MainActivity.kt                      # Duplicate — merge artifact
+  MainActivity.kt                     # Duplicate — merge artifact
 ```
 
 ## Data Flow
@@ -55,9 +62,12 @@ Android CameraX (PlatformView)
     -> frameBuffer (circular)           # 125-frame native FloatArray buffer
     -> TFLite Interpreter.run()         # [1,125,153] -> [1,20]
     -> Softmax + temporal smoothing     # majority vote over 10-frame history
-  -> MethodChannel 'temanisyarat/hand_landmarker_$id' (onLandmarks)
-  -> translate_page.dart (_handleLandmarks)
-    -> setState() -> UI update
+  -> MethodChannel 'temanisyarat/hand_landmarker_$id' (onLandmarks callback)
+  -> TranslateController._handleLandmarks()
+    -> update bufferCount, bufferReady, writeOffset, totalFrames, prediction
+    -> notifyListeners()
+  -> TranslatePage (setState on listener callback)
+    -> UI update
 ```
 
 ## Key Architecture Details
@@ -67,10 +77,11 @@ Android CameraX (PlatformView)
 - **Classes**: `aku, apel, ayah, besok, buku, dia, dua, hari ini, ibu, kamu, kuning, maaf, merah, nama, pisang, salam, satu, teman, terima kasih, tiga`.
 - **Temporal smoothing**: 10-frame history, 60% majority threshold.
 - **Confidence threshold**: 0.7 (softmax probability).
-- **Model file**: `assets/models/model_raw.tflite` — loaded via Android `Interpreter` (NOT `tflite_flutter`), copied from assets to `context.cacheDir` on first launch.
+- **Model file**: `android/app/src/main/assets/models/model_raw.tflite` — loaded via Android `Interpreter` (NOT `tflite_flutter`), copied from assets to `context.cacheDir` on first launch.
 - **Pose indices used**: `[0, 11, 12, 13, 14, 15, 16, 23, 24]` (nose, shoulders, elbows, wrists, hips).
 - **Missing landmarks**: encoded as `NaN` (Float.NaN) in the feature vector.
-- **All inference code** (assemble, buffer, predict, softmax, smoothing) lives in `HandLandmarkerView.kt` — the Dart side is a thin UI shell.
+- **PlatformView ID**: `temanisyarat/hand_landmarker` (registered in `HandLandmarkerPlugin`). Method channel: `temanisyarat/hand_landmarker_$id` (appended with view ID).
+- **All inference code** (assemble, buffer, predict, softmax, smoothing) lives in `HandLandmarkerView.kt` — the Dart side is a thin UI shell + state relay via `TranslateController`.
 
 ## Conventions
 
@@ -87,7 +98,7 @@ Android CameraX (PlatformView)
 | Path | Trigger | Widget | File |
 |------|---------|--------|------|
 | `/` | App start | `MainPage` (bottom nav: Home/Belajar/Artikel) | `lib/main.dart` |
-| Translate | Home page "Mulai Terjemahkan" button | `TranslatePage` | `lib/pages/translate_page.dart` |
+| Translate | Home page "Mulai Terjemahkan" button | `TranslatePage` | `lib/pages/translate/translate_page.dart` |
 | Artikel | Artikel page list item tap | `DetailArtikel` | `lib/main.dart` |
 | Settings | `CustomAppBar` menu icon (top-right) | `SettingsPage` | `lib/main.dart` |
 
@@ -113,10 +124,9 @@ Note: `tflite_flutter` is NOT used — TFLite inference runs on the native Andro
 - No CI/CD pipeline.
 - Release signing uses debug config.
 - AndroidManifest namespace (`com.example.android`) doesn't match app ID (`com.temanisyarat.android`).
-- Two `MainActivity.kt` files exist (one in `com.example.android`, one in `com.example.temanisyarat`) — likely a merge artifact.
-- `GestureDetector` in `CustomAppBar` onTap for Settings may conflict with `MenuButton` placement in production.
+- Two `MainActivity.kt` files exist (one in `com.example.android`, one in `com.example.temanisyarat`) — merge artifact.
 - `test/widget_test.dart` still contains the default Flutter counter template test (not updated for current app).
-- Android `settings.gradle.kts` uses Kotlin DSL, some Gradle plugin versions may need updating for compatibility.
+- No `settings.gradle.kts` at Flutter project root — Android settings live inside `android/` subdirectory.
 
 ## How to Run
 
@@ -132,9 +142,10 @@ flutter pub get                      # install deps
 
 ## Common Tasks
 
-- **Add new sign class**: Update `CLASS_LABELS` in `HandLandmarkerView.kt` (companion object), retrain model, replace `assets/models/model_raw.tflite`.
-- **Add new page/screen**: Add widget to `main.dart` or new file in `lib/pages/`, use `Navigator.push`.
+- **Add new sign class**: Update `CLASS_LABELS` in `HandLandmarkerView.kt` (companion object), retrain model, replace `android/app/src/main/assets/models/model_raw.tflite`.
+- **Add new page/screen**: Add widget to `main.dart` or new file under `lib/pages/`, use `Navigator.push`.
 - **Modify landmark selection**: Edit `poseIndices` in `HandLandmarkerView.kt` `assembleFrame()` and adjust `FRAME_DIM` constant.
 - **Change buffer size**: Change `MAX_FRAMES` (125) in `HandLandmarkerView.kt` companion object.
 - **Tune smoothing**: Change `HISTORY_SIZE` (10) and `MAJORITY_THRESHOLD` (0.6) in `HandLandmarkerView.kt` companion object.
 - **Tune confidence**: Change `CONFIDENCE_THRESHOLD` (0.7) in `HandLandmarkerView.kt` companion object.
+- **Modify UI prediction state**: Edit `TranslateController` in `lib/pages/translate/translate_controller.dart`.
