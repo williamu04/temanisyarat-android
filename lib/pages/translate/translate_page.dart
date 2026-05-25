@@ -1,9 +1,7 @@
-import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'translate_controller.dart';
+import 'widgets/scanning_dots.dart';
 
 class TranslatePage extends StatefulWidget {
   const TranslatePage({super.key});
@@ -13,109 +11,23 @@ class TranslatePage extends StatefulWidget {
 }
 
 class _TranslatePageState extends State<TranslatePage> {
-  MethodChannel? _methodChannel;
-  bool _hasPermission = false;
-  bool _modelLoaded = false;
-  bool _modelError = false;
-  bool _bufferReady = false;
-  int _bufferCount = 0;
-  String? _currentPrediction;
-  final List<String> _history = [];
-  File? _historyFile;
+  final _controller = TranslateController();
 
   @override
   void initState() {
     super.initState();
-    _init();
-  }
-
-  Future<void> _init() async {
-    final status = await Permission.camera.request();
-    if (mounted) {
-      setState(() {
-        _hasPermission = status.isGranted;
-      });
-    }
-
-    final dir = await getApplicationDocumentsDirectory();
-    _historyFile = File('${dir.path}/history.txt');
-    if (await _historyFile!.exists()) {
-      final existing = await _historyFile!.readAsString();
-      _history.addAll(
-        existing.split('\n').where((l) => l.trim().isNotEmpty).take(10),
-      );
-    }
-  }
-
-  void _onPlatformViewCreated(int id) {
-    _methodChannel = MethodChannel('temanisyarat/hand_landmarker_$id');
-    _methodChannel?.setMethodCallHandler(_handleMethodCall);
-    _startCamera();
-  }
-
-  Future<dynamic> _handleMethodCall(MethodCall call) async {
-    switch (call.method) {
-      case 'onLandmarks':
-        _handleLandmarks(call.arguments as Map);
-        break;
-      case 'onModelReady':
-        final args = call.arguments as Map;
-        if (mounted) {
-          setState(() {
-            _modelLoaded = args['loaded'] as bool? ?? false;
-            _modelError = !_modelLoaded;
-          });
-        }
-        break;
-      case 'onError':
-        final args = call.arguments as Map;
-        debugPrint('Landmarker error: ${args['message']}');
-        break;
-    }
-  }
-
-  void _handleLandmarks(Map args) {
-    final prediction = args['prediction'] as String?;
-    final bufferCount = args['bufferCount'] as int? ?? 0;
-    final bufferReady = args['bufferReady'] as bool? ?? false;
-    final modelLoaded = args['modelLoaded'] as bool?;
-
-    if (mounted) {
-      setState(() {
-        _bufferCount = bufferCount;
-        _bufferReady = bufferReady;
-        if (modelLoaded != null) _modelLoaded = modelLoaded;
-      });
-    }
-
-    if (prediction != null && prediction != _currentPrediction) {
-      setState(() {
-        _currentPrediction = prediction;
-        _history.add(prediction);
-        if (_history.length > 10) _history.removeAt(0);
-      });
-      unawaited(_writeHistory(prediction));
-    }
-  }
-
-  Future<void> _writeHistory(String word) async {
-    final file = _historyFile;
-    if (file == null) return;
-    final timestamp = DateTime.now().toIso8601String().split('T').first;
-    await file.writeAsString('$timestamp $word\n', mode: FileMode.append);
-  }
-
-  Future<void> _startCamera() async {
-    if (!_hasPermission) return;
-    try {
-      await _methodChannel?.invokeMethod('startCamera');
-    } catch (e) {
-      debugPrint('Failed to start camera: $e');
-    }
+    _controller.addListener(() {
+      if (mounted) setState(() {});
+    });
+    _controller.init();
   }
 
   @override
   void dispose() {
+    _controller.removeListener(() {
+      if (mounted) setState(() {});
+    });
+    _controller.dispose();
     super.dispose();
   }
 
@@ -125,7 +37,7 @@ class _TranslatePageState extends State<TranslatePage> {
   }
 
   Widget _buildBody() {
-    if (!_hasPermission) {
+    if (!_controller.hasPermission) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -138,12 +50,7 @@ class _TranslatePageState extends State<TranslatePage> {
             ),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: () async {
-                final status = await Permission.camera.request();
-                if (mounted) {
-                  setState(() => _hasPermission = status.isGranted);
-                }
-              },
+              onPressed: _controller.requestCameraPermission,
               child: const Text('Izinkan Kamera'),
             ),
           ],
@@ -156,7 +63,7 @@ class _TranslatePageState extends State<TranslatePage> {
         AndroidView(
           viewType: 'temanisyarat/hand_landmarker',
           creationParamsCodec: const StandardMessageCodec(),
-          onPlatformViewCreated: _onPlatformViewCreated,
+          onPlatformViewCreated: _controller.onPlatformViewCreated,
         ),
         Positioned(
           top: 0,
@@ -179,13 +86,21 @@ class _TranslatePageState extends State<TranslatePage> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.flip_camera_android,
+                      color: Colors.white,
+                    ),
+                    onPressed: _controller.switchCamera,
+                  ),
                 ],
               ),
             ),
           ),
         ),
         Positioned(bottom: 0, left: 0, right: 0, child: _buildResultPanel()),
-        if (_bufferReady)
+        if (_controller.bufferReady)
           Positioned(
             bottom: 160,
             left: 16,
@@ -197,8 +112,11 @@ class _TranslatePageState extends State<TranslatePage> {
   }
 
   Widget _buildSubtitleOverlay() {
-    if (_currentPrediction != null) {
-      final displayWords = [_currentPrediction!, ..._history.reversed.take(3)];
+    if (_controller.currentPrediction != null) {
+      final displayWords = [
+        _controller.currentPrediction!,
+        ..._controller.history.reversed.take(3),
+      ];
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(
@@ -271,7 +189,7 @@ class _TranslatePageState extends State<TranslatePage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (_modelError)
+          if (_controller.modelError)
             const Column(
               children: [
                 Icon(Icons.error_outline, color: Colors.red, size: 32),
@@ -282,7 +200,7 @@ class _TranslatePageState extends State<TranslatePage> {
                 ),
               ],
             )
-          else if (!_modelLoaded)
+          else if (!_controller.modelLoaded)
             const Column(
               children: [
                 CircularProgressIndicator(color: Colors.blue),
@@ -293,26 +211,37 @@ class _TranslatePageState extends State<TranslatePage> {
                 ),
               ],
             )
-          else if (!_bufferReady)
+          else if (!_controller.hasLandmarks)
+            const Column(
+              children: [
+                Icon(Icons.pan_tool, color: Colors.white38, size: 32),
+                SizedBox(height: 8),
+                Text(
+                  'Tidak ada tangan terdeteksi',
+                  style: TextStyle(color: Colors.white38, fontSize: 14),
+                ),
+              ],
+            )
+          else if (!_controller.bufferReady)
             Column(
               children: [
                 LinearProgressIndicator(
-                  value: _bufferCount / 125,
+                  value: _controller.bufferCount / 30,
                   color: Colors.blue,
                   backgroundColor: Colors.grey.shade800,
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Mengumpulkan frame... $_bufferCount/125',
+                  'Mengumpulkan frame... ${_controller.bufferCount}/30',
                   style: const TextStyle(color: Colors.white70),
                 ),
               ],
             )
-          else if (_currentPrediction != null)
+          else if (_controller.currentPrediction != null)
             Column(
               children: [
                 Text(
-                  _currentPrediction!.toUpperCase(),
+                  _controller.currentPrediction!.toUpperCase(),
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 32,
@@ -332,6 +261,79 @@ class _TranslatePageState extends State<TranslatePage> {
             )
           else
             _buildScanningIndicator(),
+          _buildBufferBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBufferBar() {
+    final fillRatio = (_controller.bufferCount / 125.0).clamp(0.0, 1.0);
+    final offsetRatio = _controller.bufferCount >= 125
+        ? (_controller.writeOffset / 125.0).clamp(0.0, 1.0)
+        : fillRatio;
+    final wrapped = _controller.bufferCount >= 125;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            height: 6,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final totalWidth = constraints.maxWidth;
+                return Stack(
+                  children: [
+                    Container(
+                      width: totalWidth,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade800,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                    Container(
+                      width: totalWidth * fillRatio,
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade300,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                    if (wrapped)
+                      Positioned(
+                        left: totalWidth * offsetRatio - 1,
+                        child: Container(
+                          width: 2,
+                          height: 6,
+                          color: Colors.white,
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 2),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_controller.inferencePulse)
+                Container(
+                  width: 6,
+                  height: 6,
+                  margin: const EdgeInsets.only(right: 4),
+                  decoration: const BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              Text(
+                'Frame ${_controller.totalFrames}  ›  Offset ${_controller.writeOffset}  ›  Buffer ${_controller.bufferCount}/125',
+                style: const TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -340,65 +342,13 @@ class _TranslatePageState extends State<TranslatePage> {
   Widget _buildScanningIndicator() {
     return Column(
       children: [
-        _ScanningDots(),
+        const ScanningDots(),
         const SizedBox(height: 8),
         const Text(
           'Pindai gerakan...',
           style: TextStyle(color: Colors.white54, fontSize: 16),
         ),
       ],
-    );
-  }
-}
-
-class _ScanningDots extends StatefulWidget {
-  @override
-  State<_ScanningDots> createState() => _ScanningDotsState();
-}
-
-class _ScanningDotsState extends State<_ScanningDots>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(3, (i) {
-            final delay = i * 0.2;
-            final value = ((_controller.value - delay) % 1.0).clamp(0.0, 1.0);
-            final opacity =
-                0.3 + (0.7 * (1 - (value - 0.5).abs() * 2).clamp(0.0, 1.0));
-            return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 4),
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                color: Colors.green.withValues(alpha: opacity),
-                shape: BoxShape.circle,
-              ),
-            );
-          }),
-        );
-      },
     );
   }
 }

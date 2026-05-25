@@ -51,11 +51,13 @@ class HandLandmarkerView(
     private var cameraFacing = CameraSelector.LENS_FACING_FRONT
 
     private lateinit var backgroundExecutor: ExecutorService
+    private lateinit var inferenceExecutor: ExecutorService
     private var handLandmarkerHelper: HandLandmarkerHelper? = null
     private var isStarted = false
 
     private var interpreter: Interpreter? = null
     private val modelLock = Any()
+    private val bufferLock = Any()
 
     private val frameBuffer = FloatArray(MAX_FRAMES * FRAME_DIM)
     private var frameCount = 0
@@ -75,9 +77,7 @@ class HandLandmarkerView(
         methodChannel.setMethodCallHandler(this)
 
         backgroundExecutor = Executors.newSingleThreadExecutor()
-
-        previewView.post {
-        }
+        inferenceExecutor = Executors.newSingleThreadExecutor()
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -280,75 +280,92 @@ class HandLandmarkerView(
             )
         }
 
-        val prediction = if (modelLoaded) {
-            predictFromLandmarks(pose, leftHand, rightHand)
-        } else {
-            null
-        }
-
-        val args = hashMapOf<String, Any?>()
-        pose?.let { args["pose"] = it }
-        leftHand?.let { args["leftHand"] = it }
-        rightHand?.let { args["rightHand"] = it }
-        args["prediction"] = prediction
-        args["bufferCount"] = if (frameCount < MAX_FRAMES) frameCount else MAX_FRAMES
-        args["bufferReady"] = frameCount >= MAX_FRAMES
-
-        mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
-    }
-
-    private fun predictFromLandmarks(
-        pose: List<List<Float>>?,
-        leftHand: List<List<Float>>?,
-        rightHand: List<List<Float>>?
-    ): String? {
         val frame = assembleFrame(pose, leftHand, rightHand)
 
-        val offset = frameCount % MAX_FRAMES
-        System.arraycopy(frame, 0, frameBuffer, offset * FRAME_DIM, FRAME_DIM)
-        if (frameCount < MAX_FRAMES) frameCount++
+        if (frame.count { it.isNaN() } > FRAME_DIM / 2) {
+            val args = hashMapOf<String, Any?>()
+            args["prediction"] = null
+            args["hasLandmarks"] = false
+            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
+            return
+        }
 
-        if (frameCount < MAX_FRAMES) return null
+        val canInfer: Boolean
+        synchronized(bufferLock) {
+            val offset = frameCount % MAX_FRAMES
+            System.arraycopy(frame, 0, frameBuffer, offset * FRAME_DIM, FRAME_DIM)
+            frameCount++
+            canInfer = frameCount >= EARLY_INFERENCE_FRAMES && modelLoaded
+        }
 
+        if (canInfer) {
+            inferenceExecutor.execute { runInference() }
+        } else {
+            val args = hashMapOf<String, Any?>()
+            args["prediction"] = null
+            args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
+            args["bufferReady"] = false
+            args["writeOffset"] = frameCount % MAX_FRAMES
+            args["totalFrames"] = frameCount
+            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
+        }
+    }
+
+    private fun runInference() {
         val input = Array(1) { Array(MAX_FRAMES) { FloatArray(FRAME_DIM) } }
-        val startIdx = frameCount % MAX_FRAMES
-        for (i in 0 until MAX_FRAMES) {
-            val srcIdx = (startIdx + i) % MAX_FRAMES
-            for (j in 0 until FRAME_DIM) {
-                input[0][i][j] = frameBuffer[srcIdx * FRAME_DIM + j]
+        val currentCount: Int
+        synchronized(bufferLock) {
+            currentCount = frameCount
+            val startIdx = if (currentCount >= MAX_FRAMES) currentCount % MAX_FRAMES else 0
+            val fillCount = minOf(currentCount, MAX_FRAMES)
+            for (i in 0 until fillCount) {
+                val srcIdx = (startIdx + i) % MAX_FRAMES
+                System.arraycopy(frameBuffer, srcIdx * FRAME_DIM, input[0][i], 0, FRAME_DIM)
             }
         }
 
         val output = Array(1) { FloatArray(NUM_CLASSES) }
-
         synchronized(modelLock) {
             try {
                 interpreter?.run(input, output)
             } catch (e: Exception) {
                 Log.e(TAG, "Inference failed", e)
-                return null
+                return
             }
         }
 
         val logits = output[0]
-        val maxVal = logits.maxOrNull() ?: return null
+        val maxVal = logits.maxOrNull() ?: return
         val expSum = logits.sumOf { exp((it - maxVal).toDouble()) }.toFloat()
         val probs = logits.map { exp((it - maxVal).toDouble()).toFloat() / expSum }
-        val bestProb = probs.maxOrNull() ?: return null
-        if (bestProb < CONFIDENCE_THRESHOLD) return null
+        val bestProb = probs.maxOrNull() ?: return
+        val logitsStr = logits.joinToString(limit = 5) { String.format("%.3f", it) }
+        Log.d(TAG, "Logits (first 5): $logitsStr | bestProb=%.4f | offset=%d | total=%d".format(bestProb, currentCount % MAX_FRAMES, currentCount))
+        val nanCount = input[0].sumOf { frame -> frame.count { it.isNaN() } }
+        Log.d(TAG, "NaN count in buffer: $nanCount / ${MAX_FRAMES * FRAME_DIM}")
+        val prediction: String? = if (bestProb >= CONFIDENCE_THRESHOLD) {
+            val predIdx = probs.indexOf(bestProb)
+            predictionHistory.add(predIdx)
+            if (predictionHistory.size > HISTORY_SIZE) predictionHistory.removeAt(0)
 
-        val predIdx = probs.indexOf(bestProb)
+            val counts = predictionHistory.groupingBy { it }.eachCount()
+            val bestEntry = counts.maxByOrNull { it.value }
+            if (bestEntry != null && bestEntry.value >= (HISTORY_SIZE * MAJORITY_THRESHOLD).toInt()) {
+                CLASS_LABELS.getOrNull(bestEntry.key).also { previousPrediction = it }
+            } else {
+                null
+            }
+        } else {
+            null
+        }
 
-        predictionHistory.add(predIdx)
-        if (predictionHistory.size > HISTORY_SIZE) predictionHistory.removeAt(0)
-
-        val counts = predictionHistory.groupingBy { it }.eachCount()
-        val bestEntry = counts.maxByOrNull { it.value } ?: return null
-        if (bestEntry.value < HISTORY_SIZE * MAJORITY_THRESHOLD) return null
-
-        val result = CLASS_LABELS.getOrNull(bestEntry.key)
-        previousPrediction = result
-        return result
+        val args = hashMapOf<String, Any?>()
+        args["prediction"] = prediction
+        args["bufferCount"] = currentCount.coerceAtMost(MAX_FRAMES)
+        args["bufferReady"] = true
+        args["writeOffset"] = currentCount % MAX_FRAMES
+        args["totalFrames"] = currentCount
+        mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
     }
 
     private fun assembleFrame(
@@ -416,10 +433,12 @@ class HandLandmarkerView(
     }
 
     private fun resetBuffer() {
-        frameBuffer.fill(0f)
-        frameCount = 0
-        predictionHistory.clear()
-        previousPrediction = null
+        synchronized(bufferLock) {
+            frameBuffer.fill(0f)
+            frameCount = 0
+            predictionHistory.clear()
+            previousPrediction = null
+        }
     }
 
     override fun onError(error: String, errorCode: Int) {
@@ -432,6 +451,7 @@ class HandLandmarkerView(
         cameraProvider?.unbindAll()
         handLandmarkerHelper?.clear()
         backgroundExecutor.shutdown()
+        inferenceExecutor.shutdown()
         interpreter?.close()
         methodChannel.setMethodCallHandler(null)
     }
@@ -439,10 +459,11 @@ class HandLandmarkerView(
     companion object {
         private const val TAG = "HandLandmarkerView"
         private const val MAX_FRAMES = 125
+        private const val EARLY_INFERENCE_FRAMES = 30
         private const val FRAME_DIM = 153
         private const val NUM_CLASSES = 20
-        private const val CONFIDENCE_THRESHOLD = 0.7f
-        private const val HISTORY_SIZE = 10
+        private const val CONFIDENCE_THRESHOLD = 0.8f
+        private const val HISTORY_SIZE = 15
         private const val MAJORITY_THRESHOLD = 0.6f
 
         private val CLASS_LABELS = listOf(

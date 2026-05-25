@@ -25,7 +25,7 @@ class HandLandmarkerHelper(
     var minPoseTrackingConfidence: Float = DEFAULT_POSE_TRACKING_CONFIDENCE,
     var minPosePresenceConfidence: Float = DEFAULT_POSE_PRESENCE_CONFIDENCE,
     var maxNumHands: Int = DEFAULT_NUM_HANDS,
-    var currentDelegate: Int = DELEGATE_CPU,
+    var currentDelegate: Int = DELEGATE_GPU,
     val context: Context,
     val landmarkerListener: LandmarkerListener? = null
 ) {

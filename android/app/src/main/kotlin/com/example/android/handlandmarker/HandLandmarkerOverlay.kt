@@ -20,6 +20,8 @@ class HandLandmarkerOverlay @JvmOverloads constructor(
     private var handResult: HandLandmarkerResult? = null
     private var poseResult: PoseLandmarkerResult? = null
     private var scaleFactor: Float = 1f
+    private var offsetX: Float = 0f
+    private var offsetY: Float = 0f
     private var imageWidth: Int = 1
     private var imageHeight: Int = 1
     private val linePaint = Paint().apply {
@@ -63,7 +65,10 @@ class HandLandmarkerOverlay @JvmOverloads constructor(
         this.imageHeight = imageHeight
         this.imageWidth = imageWidth
 
-        scaleFactor = max(width * 1f / imageWidth, height * 1f / imageHeight)
+        val scale = max(width * 1f / imageWidth, height * 1f / imageHeight)
+        scaleFactor = scale
+        offsetX = (width - imageWidth * scale) / 2f
+        offsetY = (height - imageHeight * scale) / 2f
         invalidate()
     }
 
@@ -79,8 +84,8 @@ class HandLandmarkerOverlay @JvmOverloads constructor(
             for (i in poseLandmarkIndices) {
                 val lm = landmarkList[i]
                 canvas.drawCircle(
-                    lm.x() * imageWidth * scaleFactor,
-                    lm.y() * imageHeight * scaleFactor,
+                    lm.x() * imageWidth * scaleFactor + offsetX,
+                    lm.y() * imageHeight * scaleFactor + offsetY,
                     POSE_POINT_RADIUS,
                     posePointPaint
                 )
@@ -90,10 +95,10 @@ class HandLandmarkerOverlay @JvmOverloads constructor(
                 val startLm = landmarkList[connection.first]
                 val endLm = landmarkList[connection.second]
                 canvas.drawLine(
-                    startLm.x() * imageWidth * scaleFactor,
-                    startLm.y() * imageHeight * scaleFactor,
-                    endLm.x() * imageWidth * scaleFactor,
-                    endLm.y() * imageHeight * scaleFactor,
+                    startLm.x() * imageWidth * scaleFactor + offsetX,
+                    startLm.y() * imageHeight * scaleFactor + offsetY,
+                    endLm.x() * imageWidth * scaleFactor + offsetX,
+                    endLm.y() * imageHeight * scaleFactor + offsetY,
                     poseLinePaint
                 )
             }
@@ -104,8 +109,8 @@ class HandLandmarkerOverlay @JvmOverloads constructor(
         for (landmark in result.landmarks()) {
             for (normalizedLandmark in landmark) {
                 canvas.drawPoint(
-                    normalizedLandmark.x() * imageWidth * scaleFactor,
-                    normalizedLandmark.y() * imageHeight * scaleFactor,
+                    normalizedLandmark.x() * imageWidth * scaleFactor + offsetX,
+                    normalizedLandmark.y() * imageHeight * scaleFactor + offsetY,
                     pointPaint
                 )
             }
@@ -113,10 +118,10 @@ class HandLandmarkerOverlay @JvmOverloads constructor(
             HandLandmarker.HAND_CONNECTIONS.forEach { conn ->
                 conn?.let {
                     canvas.drawLine(
-                        landmark[it.start()].x() * imageWidth * scaleFactor,
-                        landmark[it.start()].y() * imageHeight * scaleFactor,
-                        landmark[it.end()].x() * imageWidth * scaleFactor,
-                        landmark[it.end()].y() * imageHeight * scaleFactor,
+                        landmark[it.start()].x() * imageWidth * scaleFactor + offsetX,
+                        landmark[it.start()].y() * imageHeight * scaleFactor + offsetY,
+                        landmark[it.end()].x() * imageWidth * scaleFactor + offsetX,
+                        landmark[it.end()].y() * imageHeight * scaleFactor + offsetY,
                         linePaint
                     )
                 }
