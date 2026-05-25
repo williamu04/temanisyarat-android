@@ -16,6 +16,7 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
 import androidx.core.graphics.createBitmap
+import java.util.concurrent.ConcurrentHashMap
 
 class HandLandmarkerHelper(
     var minHandDetectionConfidence: Float = DEFAULT_HAND_DETECTION_CONFIDENCE,
@@ -37,13 +38,27 @@ class HandLandmarkerHelper(
 
     private val runningMode = RunningMode.LIVE_STREAM
 
+    private class PendingFrame(
+        var handResult: HandLandmarkerResult? = null,
+        var poseResult: PoseLandmarkerResult? = null,
+        var imageHeight: Int = 0,
+        var imageWidth: Int = 0
+    )
+
+    private val pendingFrames = ConcurrentHashMap<Long, PendingFrame>()
+
     init {
         setupHandLandmarker()
         setupPoseLandmarker()
     }
 
-    fun clear() {
+    fun shutdown() {
         isShutdown = true
+    }
+
+    fun clear() {
+        shutdown()
+        pendingFrames.clear()
         handLandmarker?.close()
         handLandmarker = null
         poseLandmarker?.close()
@@ -118,17 +133,6 @@ class HandLandmarkerHelper(
         }
     }
 
-    @Volatile
-    private var pendingHandResult: HandLandmarkerResult? = null
-    @Volatile
-    private var pendingPoseResult: PoseLandmarkerResult? = null
-    @Volatile
-    private var pendingFrameTime: Long = 0
-    @Volatile
-    private var pendingImageHeight: Int = 0
-    @Volatile
-    private var pendingImageWidth: Int = 0
-
     fun detectLiveStream(imageProxy: ImageProxy, isFrontCamera: Boolean) {
         if (isShutdown) {
             imageProxy.close()
@@ -153,49 +157,49 @@ class HandLandmarkerHelper(
 
         val mpImage = BitmapImageBuilder(rotatedBitmap).build()
 
-        synchronized(this) {
-            pendingHandResult = null
-            pendingPoseResult = null
-            pendingFrameTime = frameTime
-            pendingImageHeight = rotatedBitmap.height
-            pendingImageWidth = rotatedBitmap.width
+        if (pendingFrames.size > MAX_PENDING_FRAMES) {
+            val oldest = pendingFrames.keys.minOrNull()
+            if (oldest != null) pendingFrames.remove(oldest)
         }
+        pendingFrames[frameTime] = PendingFrame(
+            imageHeight = rotatedBitmap.height,
+            imageWidth = rotatedBitmap.width
+        )
 
         handLandmarker?.detectAsync(mpImage, frameTime)
         poseLandmarker?.detectAsync(mpImage, frameTime)
     }
 
     private fun returnHandLivestreamResult(result: HandLandmarkerResult, input: MPImage) {
-        synchronized(this) {
-            pendingHandResult = result
-            checkAndEmit()
-        }
+        val frameTime = result.timestampMs()
+        tryEmit(frameTime) { it.handResult = result }
     }
 
     private fun returnPoseLivestreamResult(result: PoseLandmarkerResult, input: MPImage) {
-        synchronized(this) {
-            pendingPoseResult = result
-            checkAndEmit()
-        }
+        val frameTime = result.timestampMs()
+        tryEmit(frameTime) { it.poseResult = result }
     }
 
-    private fun checkAndEmit() {
-        val hand = pendingHandResult
-        val pose = pendingPoseResult
-        if (hand != null && pose != null) {
-            val inferenceTime = SystemClock.uptimeMillis() - pendingFrameTime
-            landmarkerListener?.onResults(
-                CombinedResultBundle(
-                    handResult = hand,
-                    poseResult = pose,
-                    inferenceTime = inferenceTime,
-                    imageHeight = pendingImageHeight,
-                    imageWidth = pendingImageWidth
+    private fun tryEmit(frameTime: Long, store: (PendingFrame) -> Unit) {
+        val bundle = mutableListOf<CombinedResultBundle>()
+        pendingFrames.computeIfPresent(frameTime) { _, frame ->
+            store(frame)
+            if (frame.handResult != null && frame.poseResult != null) {
+                bundle.add(
+                    CombinedResultBundle(
+                        handResult = frame.handResult!!,
+                        poseResult = frame.poseResult!!,
+                        inferenceTime = SystemClock.uptimeMillis() - frameTime,
+                        imageHeight = frame.imageHeight,
+                        imageWidth = frame.imageWidth
+                    )
                 )
-            )
-            pendingHandResult = null
-            pendingPoseResult = null
+                null
+            } else {
+                frame
+            }
         }
+        bundle.firstOrNull()?.let { landmarkerListener?.onResults(it) }
     }
 
     private fun returnLivestreamError(error: RuntimeException) {
@@ -205,7 +209,7 @@ class HandLandmarkerHelper(
     companion object {
         const val TAG = "HandLandmarkerHelper"
         private const val MP_HAND_LANDMARKER_TASK = "hand_landmarker.task"
-        private const val MP_POSE_LANDMARKER_TASK = "pose_landmarker_full.task"
+        private const val MP_POSE_LANDMARKER_TASK = "pose_landmarker_lite.task"
 
         const val DELEGATE_CPU = 0
         const val DELEGATE_GPU = 1
@@ -216,6 +220,7 @@ class HandLandmarkerHelper(
         const val DEFAULT_POSE_TRACKING_CONFIDENCE = 0.5F
         const val DEFAULT_POSE_PRESENCE_CONFIDENCE = 0.5F
         const val DEFAULT_NUM_HANDS = 2
+        private const val MAX_PENDING_FRAMES = 10
         const val OTHER_ERROR = 0
         const val GPU_ERROR = 1
     }

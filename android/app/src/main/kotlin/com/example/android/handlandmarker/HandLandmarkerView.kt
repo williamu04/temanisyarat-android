@@ -7,7 +7,6 @@ import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.widget.FrameLayout
-import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -27,6 +26,7 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import android.util.Size
 import kotlin.math.exp
 
 class HandLandmarkerView(
@@ -39,6 +39,7 @@ class HandLandmarkerView(
     private val rootView: FrameLayout = FrameLayout(context)
     private val previewView: PreviewView = PreviewView(context).apply {
         implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        scaleType = PreviewView.ScaleType.FILL_CENTER
     }
     private val overlayView: HandLandmarkerOverlay = HandLandmarkerOverlay(context)
     private val methodChannel: MethodChannel = MethodChannel(messenger, "temanisyarat/hand_landmarker_$id")
@@ -62,6 +63,11 @@ class HandLandmarkerView(
     private val frameBuffer = FloatArray(MAX_FRAMES * FRAME_DIM)
     private var frameCount = 0
     private var modelLoaded = false
+
+    private val inferenceInput = Array(1) { Array(MAX_FRAMES) { FloatArray(FRAME_DIM) } }
+    private val inferenceOutput = Array(1) { FloatArray(NUM_CLASSES) }
+
+    private var inferenceTick = 0
 
     private val predictionHistory = mutableListOf<Int>()
     private var previousPrediction: String? = null
@@ -138,7 +144,9 @@ class HandLandmarkerView(
                 FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
             )
             synchronized(modelLock) {
-                interpreter = Interpreter(model)
+                interpreter = Interpreter(model, Interpreter.Options().apply {
+                    setUseXNNPACK(true)
+                })
             }
             modelLoaded = true
             Log.i(TAG, "Model loaded successfully")
@@ -150,6 +158,7 @@ class HandLandmarkerView(
 
     private fun stopCamera(result: MethodChannel.Result) {
         try {
+            handLandmarkerHelper?.shutdown()
             cameraProvider?.unbindAll()
             isStarted = false
             overlayView.clear()
@@ -202,12 +211,12 @@ class HandLandmarkerView(
             .build()
 
         preview = Preview.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+            .setTargetResolution(Size(640, 480))
             .setTargetRotation(previewView.display.rotation)
             .build()
 
         imageAnalyzer = ImageAnalysis.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+            .setTargetResolution(Size(640, 480))
             .setTargetRotation(previewView.display.rotation)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
@@ -280,9 +289,9 @@ class HandLandmarkerView(
             )
         }
 
-        val frame = assembleFrame(pose, leftHand, rightHand)
+        val (frame, nanCount) = assembleFrame(pose, leftHand, rightHand)
 
-        if (frame.count { it.isNaN() } > FRAME_DIM / 2) {
+        if (nanCount > FRAME_DIM / 2) {
             val args = hashMapOf<String, Any?>()
             args["prediction"] = null
             args["hasLandmarks"] = false
@@ -299,7 +308,17 @@ class HandLandmarkerView(
         }
 
         if (canInfer) {
-            inferenceExecutor.execute { runInference() }
+            inferenceTick++
+            if (inferenceTick % INFERENCE_INTERVAL == 0) {
+                inferenceExecutor.execute { runInference() }
+            }
+            val args = hashMapOf<String, Any?>()
+            args["prediction"] = previousPrediction
+            args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
+            args["bufferReady"] = true
+            args["writeOffset"] = frameCount % MAX_FRAMES
+            args["totalFrames"] = frameCount
+            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
         } else {
             val args = hashMapOf<String, Any?>()
             args["prediction"] = null
@@ -312,7 +331,6 @@ class HandLandmarkerView(
     }
 
     private fun runInference() {
-        val input = Array(1) { Array(MAX_FRAMES) { FloatArray(FRAME_DIM) } }
         val currentCount: Int
         synchronized(bufferLock) {
             currentCount = frameCount
@@ -320,29 +338,26 @@ class HandLandmarkerView(
             val fillCount = minOf(currentCount, MAX_FRAMES)
             for (i in 0 until fillCount) {
                 val srcIdx = (startIdx + i) % MAX_FRAMES
-                System.arraycopy(frameBuffer, srcIdx * FRAME_DIM, input[0][i], 0, FRAME_DIM)
+                System.arraycopy(frameBuffer, srcIdx * FRAME_DIM, inferenceInput[0][i], 0, FRAME_DIM)
             }
         }
 
-        val output = Array(1) { FloatArray(NUM_CLASSES) }
         synchronized(modelLock) {
             try {
-                interpreter?.run(input, output)
+                interpreter?.run(inferenceInput, inferenceOutput)
             } catch (e: Exception) {
                 Log.e(TAG, "Inference failed", e)
                 return
             }
         }
 
-        val logits = output[0]
+        val logits = inferenceOutput[0]
         val maxVal = logits.maxOrNull() ?: return
         val expSum = logits.sumOf { exp((it - maxVal).toDouble()) }.toFloat()
         val probs = logits.map { exp((it - maxVal).toDouble()).toFloat() / expSum }
         val bestProb = probs.maxOrNull() ?: return
         val logitsStr = logits.joinToString(limit = 5) { String.format("%.3f", it) }
         Log.d(TAG, "Logits (first 5): $logitsStr | bestProb=%.4f | offset=%d | total=%d".format(bestProb, currentCount % MAX_FRAMES, currentCount))
-        val nanCount = input[0].sumOf { frame -> frame.count { it.isNaN() } }
-        Log.d(TAG, "NaN count in buffer: $nanCount / ${MAX_FRAMES * FRAME_DIM}")
         val prediction: String? = if (bestProb >= CONFIDENCE_THRESHOLD) {
             val predIdx = probs.indexOf(bestProb)
             predictionHistory.add(predIdx)
@@ -372,9 +387,10 @@ class HandLandmarkerView(
         pose: List<List<Float>>?,
         leftHand: List<List<Float>>?,
         rightHand: List<List<Float>>?
-    ): FloatArray {
+    ): FrameResult {
         val frame = FloatArray(FRAME_DIM)
         var idx = 0
+        var nanCount = 0
         val poseIndices = listOf(0, 11, 12, 13, 14, 15, 16, 23, 24)
 
         if (pose != null && pose.isNotEmpty()) {
@@ -392,6 +408,7 @@ class HandLandmarkerView(
         } else {
             for (i in 0 until 9) {
                 frame[idx++] = Float.NaN; frame[idx++] = Float.NaN; frame[idx++] = Float.NaN
+                nanCount += 3
             }
         }
 
@@ -403,6 +420,7 @@ class HandLandmarkerView(
         } else {
             for (i in 0 until 63) {
                 frame[idx++] = Float.NaN
+                nanCount++
             }
         }
 
@@ -414,11 +432,14 @@ class HandLandmarkerView(
         } else {
             for (i in 0 until 63) {
                 frame[idx++] = Float.NaN
+                nanCount++
             }
         }
 
-        return frame
+        return FrameResult(frame, nanCount)
     }
+
+    private data class FrameResult(val frame: FloatArray, val nanCount: Int)
 
     private fun extractPose9(fullPose: List<List<Float>>): List<List<Float>> {
         if (fullPose.size < 25) {
@@ -460,6 +481,7 @@ class HandLandmarkerView(
         private const val TAG = "HandLandmarkerView"
         private const val MAX_FRAMES = 125
         private const val EARLY_INFERENCE_FRAMES = 30
+        private const val INFERENCE_INTERVAL = 2
         private const val FRAME_DIM = 153
         private const val NUM_CLASSES = 20
         private const val CONFIDENCE_THRESHOLD = 0.8f

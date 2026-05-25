@@ -58,55 +58,64 @@ class _TranslatePageState extends State<TranslatePage> {
       );
     }
 
-    return Stack(
+    return Column(
       children: [
-        AndroidView(
-          viewType: 'temanisyarat/hand_landmarker',
-          creationParamsCodec: const StandardMessageCodec(),
-          onPlatformViewCreated: _controller.onPlatformViewCreated,
-        ),
-        Positioned(
-          top: 0,
-          left: 0,
-          right: 0,
-          child: SafeArea(
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  const Text(
-                    'Terjemahkan Isyarat',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.flip_camera_android,
-                      color: Colors.white,
-                    ),
-                    onPressed: _controller.switchCamera,
-                  ),
-                ],
+        AspectRatio(
+          aspectRatio: 3 / 4,
+          child: Stack(
+            children: [
+              AndroidView(
+                viewType: 'temanisyarat/hand_landmarker',
+                creationParamsCodec: const StandardMessageCodec(),
+                onPlatformViewCreated: _controller.onPlatformViewCreated,
               ),
-            ),
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.arrow_back, color: Colors.white),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                        const Text(
+                          'Terjemahkan Isyarat',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.flip_camera_android,
+                            color: Colors.white,
+                          ),
+                          onPressed: _controller.switchCamera,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              if (_controller.bufferReady)
+                Positioned(
+                  bottom: 16,
+                  left: 16,
+                  right: 16,
+                  child: _buildSubtitleOverlay(),
+                ),
+            ],
           ),
         ),
-        Positioned(bottom: 0, left: 0, right: 0, child: _buildResultPanel()),
-        if (_controller.bufferReady)
-          Positioned(
-            bottom: 160,
-            left: 16,
-            right: 16,
-            child: _buildSubtitleOverlay(),
-          ),
+        Expanded(
+          child: _buildResultPanel(),
+        ),
       ],
     );
   }
@@ -123,10 +132,9 @@ class _TranslatePageState extends State<TranslatePage> {
           color: Colors.black.withValues(alpha: 0.65),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
             Text(
               displayWords[0].toUpperCase(),
               style: const TextStyle(

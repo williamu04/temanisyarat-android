@@ -145,7 +145,7 @@ class Section2 extends StatelessWidget {
       child: GestureDetector(
         onTap: onNavigate,
         child: Container(
-          height: 200,
+          height: 240,
           decoration: BoxDecoration(
             color: const Color(0xFF2196F3),
             borderRadius: BorderRadius.circular(24),
