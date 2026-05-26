@@ -1,0 +1,14 @@
+-dontobfuscate
+-keep class com.google.mediapipe.** { *; }
+-keep class com.google.mediapipe.framework.** { *; }
+-keep class com.google.mediapipe.tasks.** { *; }
+-dontwarn com.google.mediapipe.**
+-keep class org.tensorflow.lite.** { *; }
+-keep class com.google.ai.edge.litert.** { *; }
+-dontwarn com.google.ai.edge.litert.**
+-keep class com.google.common.flogger.** { *; }
+-dontwarn com.google.common.flogger.**
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.protobuf.**
+
+-keepattributes InnerClasses,EnclosingMethod,Signature,SourceFile,LineNumberTable

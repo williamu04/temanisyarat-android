@@ -2,7 +2,6 @@ package com.example.android.handlandmarker
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Matrix
 import android.os.SystemClock
 import android.util.Log
@@ -37,8 +36,6 @@ class HandLandmarkerHelper(
     @Volatile
     private var isShutdown = false
 
-    private val landmarkerLock = Any()
-
     private val runningMode = RunningMode.LIVE_STREAM
 
     private class PendingFrame(
@@ -50,10 +47,6 @@ class HandLandmarkerHelper(
 
     private val pendingFrames = ConcurrentHashMap<Long, PendingFrame>()
 
-    private var srcBitmap: Bitmap? = null
-    private var dstBitmap: Bitmap? = null
-    private var dstCanvas: Canvas? = null
-
     init {
         setupHandLandmarker()
         setupPoseLandmarker()
@@ -64,21 +57,30 @@ class HandLandmarkerHelper(
     }
 
     fun clear() {
-        synchronized(landmarkerLock) {
-            isShutdown = true
-            pendingFrames.clear()
-            handLandmarker?.close()
-            handLandmarker = null
-            poseLandmarker?.close()
-            poseLandmarker = null
-        }
+        shutdown()
+        pendingFrames.clear()
+        handLandmarker?.close()
+        handLandmarker = null
+        poseLandmarker?.close()
+        poseLandmarker = null
     }
 
     fun isClosed(): Boolean = handLandmarker == null && poseLandmarker == null
 
     private fun setupHandLandmarker() {
+        val delegates = if (currentDelegate == DELEGATE_GPU) {
+            listOf(DELEGATE_GPU, DELEGATE_CPU)
+        } else {
+            listOf(DELEGATE_CPU)
+        }
+        for (delegate in delegates) {
+            if (setupHandLandmarkerWithDelegate(delegate)) break
+        }
+    }
+
+    private fun setupHandLandmarkerWithDelegate(delegate: Int): Boolean {
         val baseOptionBuilder = BaseOptions.builder()
-        when (currentDelegate) {
+        when (delegate) {
             DELEGATE_CPU -> baseOptionBuilder.setDelegate(Delegate.CPU)
             DELEGATE_GPU -> baseOptionBuilder.setDelegate(Delegate.GPU)
         }
@@ -100,18 +102,33 @@ class HandLandmarkerHelper(
             }
 
             handLandmarker = HandLandmarker.createFromOptions(context, optionsBuilder.build())
-        } catch (e: IllegalStateException) {
-            landmarkerListener?.onError("Hand Landmarker init failed: ${e.message}")
-            Log.e(TAG, "Hand Landmarker init failed", e)
-        } catch (e: RuntimeException) {
-            landmarkerListener?.onError("Hand Landmarker GPU error", GPU_ERROR)
-            Log.e(TAG, "Hand Landmarker GPU error", e)
+            currentDelegate = delegate
+            return true
+        } catch (e: Exception) {
+            if (delegate == DELEGATE_GPU) {
+                Log.w(TAG, "Hand Landmarker GPU init failed, retrying with CPU", e)
+            } else {
+                landmarkerListener?.onError("Hand Landmarker init failed: ${e.message}")
+                Log.e(TAG, "Hand Landmarker init failed", e)
+            }
+            return false
         }
     }
 
     private fun setupPoseLandmarker() {
+        val delegates = if (currentDelegate == DELEGATE_GPU) {
+            listOf(DELEGATE_GPU, DELEGATE_CPU)
+        } else {
+            listOf(DELEGATE_CPU)
+        }
+        for (delegate in delegates) {
+            if (setupPoseLandmarkerWithDelegate(delegate)) break
+        }
+    }
+
+    private fun setupPoseLandmarkerWithDelegate(delegate: Int): Boolean {
         val baseOptionBuilder = BaseOptions.builder()
-        when (currentDelegate) {
+        when (delegate) {
             DELEGATE_CPU -> baseOptionBuilder.setDelegate(Delegate.CPU)
             DELEGATE_GPU -> baseOptionBuilder.setDelegate(Delegate.GPU)
         }
@@ -133,75 +150,53 @@ class HandLandmarkerHelper(
             }
 
             poseLandmarker = PoseLandmarker.createFromOptions(context, optionsBuilder.build())
-        } catch (e: IllegalStateException) {
-            landmarkerListener?.onError("Pose Landmarker init failed: ${e.message}")
-            Log.e(TAG, "Pose Landmarker init failed", e)
-        } catch (e: RuntimeException) {
-            landmarkerListener?.onError("Pose Landmarker GPU error", GPU_ERROR)
-            Log.e(TAG, "Pose Landmarker GPU error", e)
+            return true
+        } catch (e: Exception) {
+            if (delegate == DELEGATE_GPU) {
+                Log.w(TAG, "Pose Landmarker GPU init failed, retrying with CPU", e)
+            } else {
+                landmarkerListener?.onError("Pose Landmarker init failed: ${e.message}")
+                Log.e(TAG, "Pose Landmarker init failed", e)
+            }
+            return false
         }
     }
 
     fun detectLiveStream(imageProxy: ImageProxy, isFrontCamera: Boolean) {
-        val frameTime: Long
-        val mpImage: MPImage
-
-        synchronized(landmarkerLock) {
-            if (isShutdown || handLandmarker == null || poseLandmarker == null) {
-                imageProxy.close()
-                return
-            }
-
-            frameTime = SystemClock.uptimeMillis()
-
-            val rotation = imageProxy.imageInfo.rotationDegrees
-            val width = imageProxy.width
-            val height = imageProxy.height
-
-            val buffer = imageProxy.planes[0].buffer
-            if (srcBitmap == null || srcBitmap!!.width != width || srcBitmap!!.height != height) {
-                srcBitmap = createBitmap(width, height)
-            }
-            srcBitmap!!.copyPixelsFromBuffer(buffer)
+        if (isShutdown) {
             imageProxy.close()
-
-            val rotatedW: Int
-            val rotatedH: Int
-            if (rotation == 90 || rotation == 270) {
-                rotatedW = height
-                rotatedH = width
-            } else {
-                rotatedW = width
-                rotatedH = height
-            }
-
-            if (dstBitmap == null || dstBitmap!!.width != rotatedW || dstBitmap!!.height != rotatedH) {
-                dstBitmap = createBitmap(rotatedW, rotatedH)
-                dstCanvas = Canvas(dstBitmap!!)
-            }
-
-            val matrix = Matrix().apply {
-                postRotate(rotation.toFloat())
-                if (isFrontCamera) {
-                    postScale(-1f, 1f, width.toFloat() / 2f, height.toFloat() / 2f)
-                }
-            }
-            dstCanvas!!.drawBitmap(srcBitmap!!, matrix, null)
-
-            mpImage = BitmapImageBuilder(dstBitmap!!).build()
-
-            if (pendingFrames.size > MAX_PENDING_FRAMES) {
-                val oldest = pendingFrames.keys.minOrNull()
-                if (oldest != null) pendingFrames.remove(oldest)
-            }
-            pendingFrames[frameTime] = PendingFrame(
-                imageHeight = rotatedH,
-                imageWidth = rotatedW
-            )
-
-            handLandmarker?.detectAsync(mpImage, frameTime)
-            poseLandmarker?.detectAsync(mpImage, frameTime)
+            return
         }
+
+        val frameTime = SystemClock.uptimeMillis()
+
+        val bitmapBuffer = createBitmap(imageProxy.width, imageProxy.height)
+        imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
+        imageProxy.close()
+
+        val matrix = Matrix().apply {
+            postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
+            if (isFrontCamera) {
+                postScale(-1f, 1f, imageProxy.width.toFloat() / 2f, imageProxy.height.toFloat() / 2f)
+            }
+        }
+        val rotatedBitmap = Bitmap.createBitmap(
+            bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height, matrix, true
+        )
+
+        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+
+        if (pendingFrames.size > MAX_PENDING_FRAMES) {
+            val oldest = pendingFrames.keys.minOrNull()
+            if (oldest != null) pendingFrames.remove(oldest)
+        }
+        pendingFrames[frameTime] = PendingFrame(
+            imageHeight = rotatedBitmap.height,
+            imageWidth = rotatedBitmap.width
+        )
+
+        handLandmarker?.detectAsync(mpImage, frameTime)
+        poseLandmarker?.detectAsync(mpImage, frameTime)
     }
 
     private fun returnHandLivestreamResult(result: HandLandmarkerResult, input: MPImage) {
@@ -256,7 +251,6 @@ class HandLandmarkerHelper(
         const val DEFAULT_NUM_HANDS = 2
         private const val MAX_PENDING_FRAMES = 10
         const val OTHER_ERROR = 0
-        const val GPU_ERROR = 1
     }
 
     data class CombinedResultBundle(

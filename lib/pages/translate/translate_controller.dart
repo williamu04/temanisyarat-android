@@ -85,6 +85,7 @@ class TranslateController extends ChangeNotifier {
     writeOffset = newWriteOffset;
     totalFrames = newTotalFrames;
     if (modelLoadedArg != null) modelLoaded = modelLoadedArg;
+    notifyListeners();
 
     if (prediction != null && prediction != currentPrediction) {
       currentPrediction = prediction;
@@ -123,6 +124,9 @@ class TranslateController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    try {
+      _channel?.invokeMethod('stopCamera');
+    } catch (_) {}
     super.dispose();
   }
 }

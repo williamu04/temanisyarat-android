@@ -1,26 +1,26 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
+    }
+}
+
 android {
     namespace = "com.example.android"
-
-    configurations.all {
-      exclude(group = "com.google.ai.edge.litert")
-    }
 
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     defaultConfig {
@@ -34,21 +34,27 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
 
 dependencies {
-    val cameraxVersion = "1.4.2"
+    val cameraxVersion = "1.6.1"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
 
-    implementation("com.google.mediapipe:tasks-vision:0.10.29")
+    implementation("com.google.mediapipe:tasks-vision:0.10.35") {
+        exclude(group = "com.google.ai.edge.litert")
+    }
 
-    implementation("org.tensorflow:tensorflow-lite:2.14.0")
-    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.14.0")
+    implementation("com.google.ai.edge.litert:litert:1.4.1")
+    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1")
 }
 
 flutter {

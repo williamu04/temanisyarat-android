@@ -16,7 +16,7 @@
 | Flutter | `3.41.9` |
 | Kotlin | `2.3.21` |
 | Gradle | `9.5.1` |
-| Java | `openjdk-26` |
+| Java | `openjdk-21` |
 | FlutterGen | `5.14.1` |
 
 ## Source Layout
@@ -30,7 +30,7 @@ lib/
                                       #   SettingsPage (545 lines)
   pages/
     translate/
-      translate_page.dart             # Camera + sign translation UI (362 lines)
+      translate_page.dart             # Camera + sign translation UI (354 lines)
       translate_controller.dart       # MethodChannel bridge + prediction state +
                                       #   buffer state + history persistence (129 lines)
       widgets/
@@ -49,7 +49,7 @@ android/app/src/main/kotlin/com/example/android/
     HandLandmarkerOverlay.kt          # Canvas skeleton overlay
 
 android/app/src/main/kotlin/com/example/temanisyarat/
-  (empty — merge artifact removed)
+  MainActivity.kt                     # Duplicate — merge artifact
 ```
 
 ## Data Flow
@@ -61,7 +61,7 @@ Android CameraX (PlatformView)
     -> assembleFrame()                  # 51 landmarks x 3 = 153-dim
     -> frameBuffer (circular)           # 125-frame native FloatArray buffer
     -> TFLite Interpreter.run()         # [1,125,153] -> [1,20]
-    -> Softmax + temporal smoothing     # majority vote over 15-frame history
+    -> Softmax + temporal smoothing     # majority vote over 10-frame history
   -> MethodChannel 'temanisyarat/hand_landmarker_$id' (onLandmarks callback)
   -> TranslateController._handleLandmarks()
     -> update bufferCount, bufferReady, writeOffset, totalFrames, prediction
@@ -75,11 +75,8 @@ Android CameraX (PlatformView)
 - **Input shape**: `[1, 125, 153]` — 125 frames, each with 51 landmarks (9 pose + 21 left hand + 21 right hand) × 3 (x,y,z).
 - **Output shape**: `[1, 20]` — logits for 20 sign classes.
 - **Classes**: `aku, apel, ayah, besok, buku, dia, dua, hari ini, ibu, kamu, kuning, maaf, merah, nama, pisang, salam, satu, teman, terima kasih, tiga`.
-- **Temporal smoothing**: 15-frame history, 60% majority threshold.
-- **Confidence threshold**: 0.8 (softmax probability).
-- **Early inference**: Starts predicting after 30 frames (instead of 125) via `EARLY_INFERENCE_FRAMES`.
-- **Inference interval**: Runs inference every 2 frame callbacks (`INFERENCE_INTERVAL`).
-- **XNNPACK**: Enabled via `setUseXNNPACK(true)` on the TFLite Interpreter.
+- **Temporal smoothing**: 10-frame history, 60% majority threshold.
+- **Confidence threshold**: 0.7 (softmax probability).
 - **Model file**: `android/app/src/main/assets/models/model_raw.tflite` — loaded via Android `Interpreter` (NOT `tflite_flutter`), copied from assets to `context.cacheDir` on first launch.
 - **Pose indices used**: `[0, 11, 12, 13, 14, 15, 16, 23, 24]` (nose, shoulders, elbows, wrists, hips).
 - **Missing landmarks**: encoded as `NaN` (Float.NaN) in the feature vector.
@@ -113,21 +110,21 @@ Android CameraX (PlatformView)
 - `flutter_launcher_icons: ^0.13.1` (dev) — icon generation
 - `flutter_lints: ^6.0.0` (dev) — lint rules
 
-Note: `tflite_flutter` is NOT used — TFLite inference runs on the native Android side via `org.tensorflow:tensorflow-lite`.
+Note: `tflite_flutter` is NOT used — inference runs on the native Android side via LiteRT (`com.google.ai.edge.litert`).
 
 ## Android Dependencies (build.gradle.kts)
 
 - `androidx.camera:camera-*:1.4.2` — CameraX
-- `com.google.mediapipe:tasks-vision:0.10.29` — MediaPipe Hand/Pose Landmarker (model files: `hand_landmarker.task`, `pose_landmarker_lite.task` in `android/app/src/main/assets/`)
-- `org.tensorflow:tensorflow-lite:2.14.0` — TFLite runtime
-- `org.tensorflow:tensorflow-lite-select-tf-ops:2.14.0`
+- `com.google.mediapipe:tasks-vision:0.10.29` — MediaPipe Hand/Pose Landmarker
+- `com.google.ai.edge.litert:litert:1.4.1` — LiteRT runtime (TFLite successor)
+- `org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1`
 
 ## Known Issues / Gaps
 
 - No CI/CD pipeline.
 - Release signing uses debug config.
 - AndroidManifest namespace (`com.example.android`) doesn't match app ID (`com.temanisyarat.android`).
-- `com.example.temanisyarat/` package is now empty (merge artifact removed).
+- Two `MainActivity.kt` files exist (one in `com.example.android`, one in `com.example.temanisyarat`) — merge artifact.
 - `test/widget_test.dart` still contains the default Flutter counter template test (not updated for current app).
 - No `settings.gradle.kts` at Flutter project root — Android settings live inside `android/` subdirectory.
 
@@ -149,6 +146,6 @@ flutter pub get                      # install deps
 - **Add new page/screen**: Add widget to `main.dart` or new file under `lib/pages/`, use `Navigator.push`.
 - **Modify landmark selection**: Edit `poseIndices` in `HandLandmarkerView.kt` `assembleFrame()` and adjust `FRAME_DIM` constant.
 - **Change buffer size**: Change `MAX_FRAMES` (125) in `HandLandmarkerView.kt` companion object.
-- **Tune smoothing**: Change `HISTORY_SIZE` (15) and `MAJORITY_THRESHOLD` (0.6) in `HandLandmarkerView.kt` companion object.
-- **Tune confidence**: Change `CONFIDENCE_THRESHOLD` (0.8) in `HandLandmarkerView.kt` companion object.
+- **Tune smoothing**: Change `HISTORY_SIZE` (10) and `MAJORITY_THRESHOLD` (0.6) in `HandLandmarkerView.kt` companion object.
+- **Tune confidence**: Change `CONFIDENCE_THRESHOLD` (0.7) in `HandLandmarkerView.kt` companion object.
 - **Modify UI prediction state**: Edit `TranslateController` in `lib/pages/translate/translate_controller.dart`.

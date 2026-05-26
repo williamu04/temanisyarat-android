@@ -50,7 +50,7 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 - **Real-time camera translation** — Live CameraX preview with on-screen prediction overlay
 - **On-device ML** — All inference runs locally via TensorFlow Lite; no network required
 - **MediaPipe landmark tracking** — Pose (9 upper-body keypoints) + hands (2 × 21 landmarks)
-- **Temporal smoothing** — Majority-vote over a 15-frame history window for stable output
+- **Temporal smoothing** — Majority-vote over a 10-frame history window for stable output
 - **Circular frame buffer** — 125-frame native `FloatArray` buffer feeding the TFLite model
 - **Camera switch** — Toggle between front and rear cameras
 - **Translation history** — Persisted locally via `history.txt` using `path_provider`
@@ -88,8 +88,8 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 1. CameraX frames are fed to MediaPipe Hand + Pose Landmarker
 2. 51 landmarks (9 pose + 21 left hand + 21 right hand) × 3 (x, y, z) are assembled per frame
 3. Landmarks are pushed into a circular 125-frame `FloatArray` buffer
-4. When full (or after 30 early-inference frames), the buffer is sent to TFLite `Interpreter.run()` with input shape `[1, 125, 153]`
-5. Raw logits (20 classes) go through softmax → confidence threshold (0.8) → majority-vote temporal smoothing (15-frame window)
+4. When full, the buffer is sent to TFLite `Interpreter.run()` with input shape `[1, 125, 153]`
+5. Raw logits (20 classes) go through softmax → confidence threshold (0.7) → majority-vote temporal smoothing (10-frame window)
 6. The predicted label is sent back to Dart via `MethodChannel` and rendered in the UI
 
 ## Project Structure
@@ -113,11 +113,8 @@ temanisyarat/
 │   │   ├── HandLandmarkerHelper.kt        # MediaPipe Hand/Pose Landmarker wrapper
 │   │   └── HandLandmarkerOverlay.kt       # Canvas skeleton overlay
 │   └── MainActivity.kt                   # FlutterActivity entry
-├── android/app/src/main/assets/
-│   ├── hand_landmarker.task               # MediaPipe hand landmarker model
-│   ├── pose_landmarker_lite.task          # MediaPipe pose landmarker model
-│   └── models/
-│       └── model_raw.tflite               # Trained TFLite classification model
+├── android/app/src/main/assets/models/
+│   └── model_raw.tflite                   # Trained TFLite classification model
 ├── android/                              # Android native project root
 ├── assets/icon/logo.png                  # App launcher icon
 ├── pubspec.yaml                          # Flutter dependencies & config
@@ -142,10 +139,10 @@ temanisyarat/
 | ---------------------- | ---------------------------------------------------- |
 | Camera                 | CameraX (view, lifecycle, camera2) 1.4.2             |
 | Landmark Detection     | MediaPipe Tasks Vision 0.10.29 (Pose + Hand)         |
-| ML Runtime             | TensorFlow Lite 2.14.0 + select TF ops (XNNPACK)    |
+| ML Runtime             | TensorFlow Lite 2.14.0 + select TF ops               |
 | Platform Bridge        | Flutter `MethodChannel` + `PlatformView`              |
 | Min SDK                | 24                                                   |
-| Kotlin (Gradle plugin) | 2.2.20                                               |
+| Kotlin                 | 2.3.21                                               |
 | Gradle                 | 9.5.1                                                |
 
 ### ML Model
@@ -157,10 +154,8 @@ temanisyarat/
 | Classes              | 20 BISINDO words            |
 | Architecture         | GRU + 1D Conv + TempAttention |
 | Model size           | ~2.6 MB (TFLite FP16)       |
-| Early inference      | Starts at 30 frames (EARLY_INFERENCE_FRAMES) |
-| Inference interval   | Every 2nd frame callback (INFERENCE_INTERVAL)  |
-| Temporal smoothing   | 15-frame majority vote      |
-| Confidence threshold | 0.8                         |
+| Temporal smoothing   | 10-frame majority vote      |
+| Confidence threshold | 0.7                         |
 
 ## Getting Started
 
@@ -211,7 +206,6 @@ flutter build ios --release
 ```
 
 > **Note:** Release signing currently uses the debug configuration. Configure a proper release keystore before publishing.
-> The TFLite Interpreter uses XNNPACK (`setUseXNNPACK(true)`) for accelerated CPU inference.
 
 ## Project Ecosystem
 

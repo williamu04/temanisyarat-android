@@ -162,13 +162,11 @@ class HandLandmarkerView(
             cameraProvider?.unbindAll()
             isStarted = false
             overlayView.clear()
-            backgroundExecutor.execute {
-                handLandmarkerHelper?.clear()
-            }
+            handLandmarkerHelper?.clear()
             resetBuffer()
             result.success(true)
         } catch (e: Exception) {
-            result.error("STOP_ERROR", e.message, null)
+            try { result.error("STOP_ERROR", e.message, null) } catch (_: Exception) {}
         }
     }
 
@@ -292,7 +290,10 @@ class HandLandmarkerView(
         val (frame, nanCount) = assembleFrame(pose, leftHand, rightHand)
 
         if (nanCount > FRAME_DIM / 2) {
-            mainHandler.post { sendState(false, hasLandmarks = false) }
+            val args = hashMapOf<String, Any?>()
+            args["prediction"] = null
+            args["hasLandmarks"] = false
+            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
             return
         }
 
@@ -306,14 +307,24 @@ class HandLandmarkerView(
 
         if (canInfer) {
             inferenceTick++
-            val shouldInfer = inferenceTick % INFERENCE_INTERVAL == 0
-            if (shouldInfer) {
+            if (inferenceTick % INFERENCE_INTERVAL == 0) {
                 inferenceExecutor.execute { runInference() }
-            } else {
-                mainHandler.post { sendState(true) }
             }
+            val args = hashMapOf<String, Any?>()
+            args["prediction"] = previousPrediction
+            args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
+            args["bufferReady"] = true
+            args["writeOffset"] = frameCount % MAX_FRAMES
+            args["totalFrames"] = frameCount
+            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
         } else {
-            mainHandler.post { sendState(false) }
+            val args = hashMapOf<String, Any?>()
+            args["prediction"] = null
+            args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
+            args["bufferReady"] = false
+            args["writeOffset"] = frameCount % MAX_FRAMES
+            args["totalFrames"] = frameCount
+            mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
         }
     }
 
@@ -361,19 +372,13 @@ class HandLandmarkerView(
             null
         }
 
-        mainHandler.post { sendState(true, prediction) }
-    }
-
-    private fun sendState(isReady: Boolean, prediction: String? = null, hasLandmarks: Boolean = true) {
-        val pred = if (hasLandmarks) (prediction ?: previousPrediction) else null
         val args = hashMapOf<String, Any?>()
-        args["prediction"] = pred
-        args["bufferCount"] = frameCount.coerceAtMost(MAX_FRAMES)
-        args["bufferReady"] = isReady
-        args["writeOffset"] = frameCount % MAX_FRAMES
-        args["totalFrames"] = frameCount
-        args["hasLandmarks"] = hasLandmarks
-        methodChannel.invokeMethod("onLandmarks", args)
+        args["prediction"] = prediction
+        args["bufferCount"] = currentCount.coerceAtMost(MAX_FRAMES)
+        args["bufferReady"] = true
+        args["writeOffset"] = currentCount % MAX_FRAMES
+        args["totalFrames"] = currentCount
+        mainHandler.post { methodChannel.invokeMethod("onLandmarks", args) }
     }
 
     private fun assembleFrame(
@@ -462,10 +467,13 @@ class HandLandmarkerView(
     override fun getView(): View = rootView
 
     override fun dispose() {
-        backgroundExecutor.shutdown()
-        inferenceExecutor.shutdown()
-        cameraProvider?.unbindAll()
+        handLandmarkerHelper?.shutdown()
         handLandmarkerHelper?.clear()
+        try {
+            backgroundExecutor.shutdown()
+            inferenceExecutor.shutdown()
+        } catch (_: Exception) {}
+        cameraProvider?.unbindAll()
         interpreter?.close()
         methodChannel.setMethodCallHandler(null)
     }
