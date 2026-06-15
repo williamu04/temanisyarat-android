@@ -145,7 +145,7 @@ class HandLandmarkerView(
             )
             synchronized(modelLock) {
                 interpreter = Interpreter(model, Interpreter.Options().apply {
-                    setUseXNNPACK(true)
+                    setUseXNNPACK(false)
                 })
             }
             modelLoaded = true
@@ -480,14 +480,14 @@ class HandLandmarkerView(
 
     companion object {
         private const val TAG = "HandLandmarkerView"
-        private const val MAX_FRAMES = 125
-        private const val EARLY_INFERENCE_FRAMES = 30
-        private const val INFERENCE_INTERVAL = 2
+        private const val MAX_FRAMES = 110
+        private const val EARLY_INFERENCE_FRAMES = 10
+        private const val INFERENCE_INTERVAL = 1
         private const val FRAME_DIM = 153
         private const val NUM_CLASSES = 20
-        private const val CONFIDENCE_THRESHOLD = 0.8f
-        private const val HISTORY_SIZE = 15
-        private const val MAJORITY_THRESHOLD = 0.6f
+        private const val CONFIDENCE_THRESHOLD = 0.5f
+        private const val HISTORY_SIZE = 2
+        private const val MAJORITY_THRESHOLD = 0.4f
 
         private val CLASS_LABELS = listOf(
             "aku", "apel", "ayah", "besok", "buku",
