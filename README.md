@@ -3,10 +3,10 @@
 [![Flutter](https://img.shields.io/badge/Flutter-3.41-02569B?logo=flutter)](https://flutter.dev)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin)](https://kotlinlang.org)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-Tasks--Vision-00BCD4)](https://developers.google.com/mediapipe)
-[![TensorFlow Lite](https://img.shields.io/badge/TFLite-2.14-FF6F00?logo=tensorflow)](https://www.tensorflow.org/lite)
+[![LiteRT](https://img.shields.io/badge/LiteRT-1.4-FF6F00?logo=tensorflow)](https://ai.google.dev/edge/litert)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> **Teman Isyarat** (Indonesian for "Sign Friend") is an on-device, real-time Indonesian Sign Language (BISINDO) recognition app built with Flutter and Kotlin. It captures hand and pose landmarks via CameraX and MediaPipe, runs inference through a custom TFLite model, and displays predictions — all fully offline.
+> **Teman Isyarat** (Indonesian for "Sign Friend") is an on-device, real-time Indonesian Sign Language (BISINDO) recognition app built with Flutter and Kotlin. It captures hand and pose landmarks via CameraX and MediaPipe, runs inference through a custom LiteRT model, and displays predictions — all fully offline.
 
 ---
 
@@ -28,9 +28,9 @@
 
 The app is the mobile endpoint of a three-part system:
 
-1. **`lm/`** — MediaPipe landmark extraction pipeline from raw video
-2. **`model/`** — GRU-based neural network training & TFLite export
-3. **`android/`** (this repo) — Flutter app wrapping the exported TFLite model for on-device inference
+1. **[`lm/`](https://github.com/temanisyarat/landmark-extraction)** — MediaPipe landmark extraction pipeline from raw video
+2. **[`model/`](https://github.com/temanisyarat/model-pipeline)** — GRU-based neural network training & LiteRT export
+3. **[`android/`](https://github.com/temanisyarat/android)** (this repo) — Flutter app wrapping the exported LiteRT model for on-device inference
 
 It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through live camera feed, without requiring internet connectivity.
 
@@ -48,10 +48,10 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 ## Features
 
 - **Real-time camera translation** — Live CameraX preview with on-screen prediction overlay
-- **On-device ML** — All inference runs locally via TensorFlow Lite; no network required
+- **On-device ML** — All inference runs locally via LiteRT (Google AI Edge); no network required
 - **MediaPipe landmark tracking** — Pose (9 upper-body keypoints) + hands (2 × 21 landmarks)
 - **Temporal smoothing** — Majority-vote over a 10-frame history window for stable output
-- **Circular frame buffer** — 125-frame native `FloatArray` buffer feeding the TFLite model
+- **Circular frame buffer** — 110-frame native `FloatArray` buffer feeding the LiteRT model
 - **Camera switch** — Toggle between front and rear cameras
 - **Translation history** — Persisted locally via `history.txt` using `path_provider`
 - **Skeleton overlay** — Live canvas rendering of detected hand and pose landmarks
@@ -75,7 +75,7 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 │  │  ┌────────────────────────────────────┘              │  │
 │  │  │  assembleFrame() → 51 landmarks × 3 = 153-dim     │  │
 │  │  │                                                   │  │
-│  │  │  Circular Buffer (125 frames) ──► TFLite Interp.  │  │
+│  │  │  Circular Buffer (110 frames) ──► LiteRT Interp.  │  │
 │  │  │                        Softmax + Temporal Smooth. │  │
 │  │  │                        ──► MethodChannel callback │  │
 │  │  └───────────────────────────────────────────────────┘  │
@@ -87,8 +87,8 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 
 1. CameraX frames are fed to MediaPipe Hand + Pose Landmarker
 2. 51 landmarks (9 pose + 21 left hand + 21 right hand) × 3 (x, y, z) are assembled per frame
-3. Landmarks are pushed into a circular 125-frame `FloatArray` buffer
-4. When full, the buffer is sent to TFLite `Interpreter.run()` with input shape `[1, 125, 153]`
+3. Landmarks are pushed into a circular 110-frame `FloatArray` buffer
+4. When full, the buffer is sent to LiteRT `Interpreter.run()` with input shape `[1, 110, 153]`
 5. Raw logits (20 classes) go through softmax → confidence threshold (0.7) → majority-vote temporal smoothing (10-frame window)
 6. The predicted label is sent back to Dart via `MethodChannel` and rendered in the UI
 
@@ -97,26 +97,29 @@ It recognizes **20 BISINDO vocabulary words** (Central Java dialect) through liv
 ```
 temanisyarat/
 ├── lib/
-│   ├── main.dart                         # App entry, MainPage, navigation, articles, settings
+│   ├── main.dart                         # App entry, MainPage, navigation, articles, settings (966 lines)
+│   ├── constants.dart                    # Color palette constants (C class)
 │   ├── pages/
 │   │   └── translate/
-│   │       ├── translate_page.dart        # Camera + sign translation UI
-│   │       ├── translate_controller.dart  # Business logic, channel bridge, history
+│   │       ├── translate_page.dart        # Camera + sign translation UI (376 lines)
+│   │       ├── translate_controller.dart  # Business logic, channel bridge, history (132 lines)
 │   │       └── widgets/
-│   │           └── scanning_dots.dart     # Animated scanning indicator
+│   │           └── scanning_dots.dart     # Animated scanning indicator (55 lines)
 │   └── services/
-│       └── history_service.dart           # Local file persistence for predictions
+│       └── history_service.dart           # Local file persistence for predictions (27 lines)
 ├── android/app/src/main/kotlin/com/example/android/
 │   ├── handlandmarker/
 │   │   ├── HandLandmarkerPlugin.kt        # Flutter plugin registration (PlatformViewFactory)
-│   │   ├── HandLandmarkerView.kt          # PlatformView: CameraX + landmark buffer + TFLite
+│   │   ├── HandLandmarkerView.kt          # PlatformView: CameraX + landmarks + LiteRT (498 lines)
 │   │   ├── HandLandmarkerHelper.kt        # MediaPipe Hand/Pose Landmarker wrapper
 │   │   └── HandLandmarkerOverlay.kt       # Canvas skeleton overlay
 │   └── MainActivity.kt                   # FlutterActivity entry
+├── android/app/src/main/kotlin/com/example/temanisyarat/
+│   └── MainActivity.kt                   # Duplicate — merge artifact
 ├── android/app/src/main/assets/models/
-│   └── model_raw.tflite                   # Trained TFLite classification model
+│   └── model_raw.tflite                   # Trained LiteRT classification model
 ├── android/                              # Android native project root
-├── assets/icon/logo.png                  # App launcher icon
+├── assets/                               # SVG illustrations, icons, launcher icon
 ├── pubspec.yaml                          # Flutter dependencies & config
 └── .tool-versions                        # Tool version pinning
 ```
@@ -132,14 +135,15 @@ temanisyarat/
 | Navigation         | `Navigator.push` / Bottom Navigation    |
 | Persistence        | `path_provider` (file I/O)              |
 | Permissions        | `permission_handler` (camera)           |
+| Assets             | `flutter_svg` (SVG rendering)           |
 
 ### Native Layer (Kotlin / Android)
 
 | Component              | Technology                                           |
 | ---------------------- | ---------------------------------------------------- |
-| Camera                 | CameraX (view, lifecycle, camera2) 1.4.2             |
-| Landmark Detection     | MediaPipe Tasks Vision 0.10.29 (Pose + Hand)         |
-| ML Runtime             | TensorFlow Lite 2.14.0 + select TF ops               |
+| Camera                 | CameraX 1.6.1 (core, camera2, lifecycle, view)       |
+| Landmark Detection     | MediaPipe Tasks Vision 0.10.35 (Pose + Hand)         |
+| ML Runtime             | LiteRT 1.4.1 + TensorFlow Select TF Ops 2.16.1       |
 | Platform Bridge        | Flutter `MethodChannel` + `PlatformView`              |
 | Min SDK                | 24                                                   |
 | Kotlin                 | 2.3.21                                               |
@@ -149,11 +153,11 @@ temanisyarat/
 
 | Property             | Value                       |
 | -------------------- | --------------------------- |
-| Input shape          | `[1, 125, 153]`             |
+| Input shape          | `[1, 110, 153]`             |
 | Output shape         | `[1, 20]` (logits)          |
 | Classes              | 20 BISINDO words            |
 | Architecture         | GRU + 1D Conv + TempAttention |
-| Model size           | ~2.6 MB (TFLite FP16)       |
+| Model size           | ~2.6 MB (LiteRT FP16)        |
 | Temporal smoothing   | 10-frame majority vote      |
 | Confidence threshold | 0.7                         |
 
@@ -180,7 +184,7 @@ flutter pub get
 flutter run
 ```
 
-The TFLite model is bundled in `android/app/src/main/assets/models/model_raw.tflite` and is copied to the device cache directory on first launch.
+The LiteRT model is bundled in `android/app/src/main/assets/models/model_raw.tflite` and is copied to the device cache directory on first launch.
 
 ### Lint & Test
 
@@ -214,7 +218,7 @@ This app is part of the **Teman Isyarat** monorepo, which includes:
 | Repository | Purpose |
 |---|---|
 | [`lm/`](https://github.com/temanisyarat/lm) | MediaPipe landmark extraction pipeline — converts raw BISINDO videos to `.npz` landmark arrays |
-| [`model/`](https://github.com/temanisyarat/model) | GRU-based neural network training, evaluation, and TFLite export |
+| [`model/`](https://github.com/temanisyarat/model) | GRU-based neural network training, evaluation, and LiteRT export |
 | **`android/`** (you are here) | Flutter + Kotlin Android app for on-device real-time recognition |
 | [`manager/`](https://github.com/temanisyarat/manager) | Obsidian vault with ADRs, specs, sprint tracking, and team documentation |
 
@@ -222,7 +226,7 @@ This app is part of the **Teman Isyarat** monorepo, which includes:
 
 ```
 Video (raw MP4)  ──►  lm/  ──►  .npz landmarks  ──►  model/  ──►  .tflite  ──►  android/  ──►  Live predictions
-                         (MediaPipe extract)           (Train GRU)              (On-device inference)
+                         (MediaPipe extract)           (Train GRU)           (LiteRT on-device inference)
 ```
 
 ## License
@@ -231,4 +235,4 @@ This project is developed for academic purposes under the Hibah Jarprak program 
 
 ---
 
-Built with [Flutter](https://flutter.dev), [MediaPipe](https://mediapipe.dev), and [TensorFlow Lite](https://www.tensorflow.org/lite) for Indonesian Sign Language (BISINDO) recognition.
+Built with [Flutter](https://flutter.dev), [MediaPipe](https://mediapipe.dev), and [LiteRT](https://ai.google.dev/edge/litert) for Indonesian Sign Language (BISINDO) recognition.
