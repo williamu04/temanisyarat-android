@@ -121,7 +121,12 @@ class _TranslatePageState extends State<TranslatePage> {
 
   Widget _buildResultPanel() {
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.fromLTRB(
+        24,
+        24,
+        24,
+        24 + MediaQuery.paddingOf(context).bottom,
+      ),
       decoration: const BoxDecoration(
         color: C.primary,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
